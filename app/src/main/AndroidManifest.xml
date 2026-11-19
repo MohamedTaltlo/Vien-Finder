@@ -3,8 +3,8 @@
     <uses-permission android:name="android.permission.CAMERA" />
     <uses-feature android:name="android.hardware.camera" android:required="true" />
     <uses-feature android:name="android.hardware.camera.flash" android:required="false" />
-    <application android:label="Vien Finder" android:icon="@drawable/app_icon"
-        android:roundIcon="@drawable/app_icon" android:allowBackup="false"
+    <application android:label="Vien Finder" android:icon="@drawable/app_icon_art"
+        android:roundIcon="@drawable/app_icon_art" android:allowBackup="false"
         android:theme="@android:style/Theme.Material.NoActionBar"
         android:usesCleartextTraffic="false">
         <activity android:name=".MainActivity" android:exported="true"
