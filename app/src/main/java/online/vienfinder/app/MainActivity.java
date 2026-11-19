@@ -4,11 +4,9 @@ import android.Manifest;
 import android.app.Activity;
 import android.content.Context;
 import android.content.pm.PackageManager;
-import android.graphics.Bitmap;
-import android.graphics.Canvas;
+import android.content.res.ColorStateList;
 import android.graphics.Color;
-import android.graphics.Matrix;
-import android.graphics.Paint;
+import android.graphics.SurfaceTexture;
 import android.graphics.drawable.GradientDrawable;
 import android.hardware.camera2.CameraAccessException;
 import android.hardware.camera2.CameraCaptureSession;
@@ -16,529 +14,407 @@ import android.hardware.camera2.CameraCharacteristics;
 import android.hardware.camera2.CameraDevice;
 import android.hardware.camera2.CameraManager;
 import android.hardware.camera2.CaptureRequest;
+import android.hardware.camera2.CaptureResult;
+import android.hardware.camera2.TotalCaptureResult;
 import android.hardware.camera2.params.StreamConfigurationMap;
-import android.media.Image;
-import android.media.ImageReader;
+import android.opengl.GLSurfaceView;
 import android.os.Bundle;
 import android.os.Handler;
 import android.os.HandlerThread;
-import android.os.SystemClock;
 import android.util.Range;
+import android.util.Rational;
 import android.util.Size;
 import android.view.Gravity;
-import android.view.SurfaceHolder;
-import android.view.SurfaceView;
+import android.view.Surface;
 import android.view.View;
 import android.view.WindowManager;
 import android.widget.Button;
 import android.widget.FrameLayout;
-import android.widget.HorizontalScrollView;
 import android.widget.LinearLayout;
 import android.widget.SeekBar;
 import android.widget.TextView;
 import android.widget.Toast;
-import java.nio.ByteBuffer;
 import java.util.Collections;
+import java.util.Locale;
 
-public class MainActivity extends Activity {
-    private final int SKY = Color.rgb(43, 220, 232);
-    private final int PANEL = Color.argb(233, 7, 20, 37);
-    private SurfaceView cameraView;
-    private SurfaceHolder holder;
-    private TextView infoLabel;
-    private TextView sensitivityLabel;
-    private TextView contrastLabel;
-    private TextView exposureLabel;
+/** Direct camera stream + GL shaders. Does not store photos or transmit data. */
+public class MainActivity extends Activity implements VeinRenderer.Listener {
+    private static final int CYAN = Color.rgb(38,213,223);
+    private static final int DARK = Color.rgb(8,19,35);
+    private GLSurfaceView glView;
+    private VeinRenderer processor;
+    private LinearLayout panel;
+    private TextView status, sensitivityLabel, contrastLabel, brightnessLabel, exposureLabel;
     private Button[] modeButtons;
-    private Button torchButton, invertButton, freezeButton;
-    private volatile int mode = 3;
-    private volatile int sensitivity = 65;
-    private volatile int contrast = 58;
-    private volatile boolean inverted = false;
-    private volatile boolean frozen = false;
-    private volatile boolean resumed = false;
-    private volatile long lastFrameTime = 0;
-    private long measureTime = 0;
-    private int measuredFrames = 0;
-    private HandlerThread cameraThread;
-    private Handler cameraHandler;
+    private Button torchButton, reverseButton, freezeButton, controlsToggle, rotationButton;
+    private boolean resumed=false, opening=false, flashAvailable=false, torchRequested=false;
+    private boolean reversed=false, frozen=false;
+    private int mode=1, sensitivity=65, contrast=58, brightness=50;
+    private int rotateDegrees=90;
+    private CameraManager manager;
+    private String cameraId;
     private CameraDevice device;
     private CameraCaptureSession session;
     private CaptureRequest.Builder request;
-    private CameraManager cameraManager;
-    private String cameraId;
-    private ImageReader reader;
-    private boolean opening = false;
-    private boolean flashlightAvailable = false;
-    private boolean flashlightOn = false;
-    private int sensorRotation = 90;
-    private int imageWidth = 640, imageHeight = 480;
-    private Range<Integer> exposureRange = new Range<Integer>(0, 0);
-    private float exposureStep = 1f;
-    private int exposureIndex = 0;
-    private int[] pixels, feature, green, featureSum, greenSum;
-    private Bitmap bitmap;
-    private final Matrix screenMatrix = new Matrix();
-    private final Paint screenPaint = new Paint(Paint.FILTER_BITMAP_FLAG);
+    private SurfaceTexture cameraTexture;
+    private Surface outputSurface;
+    private HandlerThread cameraThread;
+    private Handler cameraHandler;
+    private int exposure=0;
+    private Range<Integer> exposureRange=new Range<Integer>(0,0);
+    private float exposureStep=1;
+    private Range<Integer> fpsRange;
 
-    @Override public void onCreate(Bundle state) {
-        super.onCreate(state);
+    @Override public void onCreate(Bundle saved){
+        super.onCreate(saved);
         getWindow().addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
-        getWindow().setStatusBarColor(Color.rgb(5, 14, 29));
-        getWindow().setNavigationBarColor(Color.rgb(5, 14, 29));
-        setContentView(makeUI());
+        getWindow().setStatusBarColor(Color.rgb(4,12,24));
+        getWindow().setNavigationBarColor(Color.rgb(4,12,24));
+        setContentView(createLayout());
     }
-
-    private int dp(float value) {
-        return (int) (value * getResources().getDisplayMetrics().density + 0.5f);
+    private int dp(float value){return (int)(value*getResources().getDisplayMetrics().density+0.5f);}
+    private GradientDrawable background(int color,int corners){
+        GradientDrawable g=new GradientDrawable();g.setColor(color);g.setCornerRadius(dp(corners));return g;
     }
-    private GradientDrawable background(int color, float radius) {
-        GradientDrawable gd = new GradientDrawable();
-        gd.setColor(color);
-        gd.setCornerRadius(dp(radius));
-        return gd;
-    }
-    private TextView text(String value, float size, int color, boolean bold) {
-        TextView t = new TextView(this);
-        t.setText(value);
-        t.setTextSize(size);
-        t.setTextColor(color);
+    private TextView text(String s,int size,int color,boolean strong){
+        TextView t=new TextView(this);t.setText(s);t.setTextColor(color);t.setTextSize(size);
         t.setGravity(Gravity.CENTER_VERTICAL);
-        if (bold) t.setTypeface(null, 1);
+        if(strong)t.setTypeface(null,1);
         return t;
     }
-    private Button button(String label) {
-        Button b = new Button(this);
-        b.setText(label);
-        b.setAllCaps(false);
-        b.setTextColor(Color.WHITE);
-        b.setTextSize(12);
-        b.setMinHeight(0);
-        b.setMinimumHeight(0);
-        b.setPadding(dp(11), dp(6), dp(11), dp(6));
-        b.setBackground(background(Color.rgb(29, 48, 68), 12));
+    private Button button(String name){
+        Button b=new Button(this);
+        b.setText(name);b.setTextColor(Color.WHITE);b.setTextSize(12);
+        b.setAllCaps(false);b.setMinHeight(0);b.setMinimumHeight(0);
+        b.setPadding(dp(6),dp(5),dp(6),dp(5));
+        b.setBackground(background(Color.rgb(28,49,72),11));
         return b;
     }
-    private LinearLayout column() {
-        LinearLayout l = new LinearLayout(this);
-        l.setOrientation(LinearLayout.VERTICAL);
-        return l;
+    private LinearLayout row(){
+        LinearLayout l=new LinearLayout(this);l.setOrientation(LinearLayout.HORIZONTAL);return l;
     }
-    private View makeUI() {
-        FrameLayout frame = new FrameLayout(this);
-        frame.setBackgroundColor(Color.rgb(5, 14, 29));
-        cameraView = new SurfaceView(this);
-        cameraView.setKeepScreenOn(true);
-        holder = cameraView.getHolder();
-        frame.addView(cameraView, new FrameLayout.LayoutParams(-1, -1));
-        holder.addCallback(new SurfaceHolder.Callback() {
-            @Override public void surfaceCreated(SurfaceHolder h) { }
-            @Override public void surfaceChanged(SurfaceHolder h, int f, int w, int z) { }
-            @Override public void surfaceDestroyed(SurfaceHolder h) { }
+    private LinearLayout column(){
+        LinearLayout l=new LinearLayout(this);l.setOrientation(LinearLayout.VERTICAL);return l;
+    }
+    private void addWeighted(LinearLayout parent,View child,int height){
+        LinearLayout.LayoutParams lp=new LinearLayout.LayoutParams(0,dp(height),1);
+        lp.setMargins(dp(3),dp(3),dp(3),dp(3));parent.addView(child,lp);
+    }
+    private void updateButtonColors(){
+        if(modeButtons==null)return;
+        for(int i=0;i<modeButtons.length;i++)
+            modeButtons[i].setBackground(background(i==mode?Color.rgb(0,123,151):Color.rgb(28,49,72),11));
+    }
+    private SeekBar slider(LinearLayout box,int initial,java.util.function.IntConsumer fn){
+        SeekBar sb=new SeekBar(this);sb.setMax(100);sb.setProgress(initial);
+        sb.setProgressTintList(ColorStateList.valueOf(CYAN));
+        sb.setThumbTintList(ColorStateList.valueOf(CYAN));
+        sb.setOnSeekBarChangeListener(new SeekBar.OnSeekBarChangeListener(){
+            @Override public void onProgressChanged(SeekBar b,int value,boolean user){fn.accept(value);}
+            @Override public void onStartTrackingTouch(SeekBar b){}
+            @Override public void onStopTrackingTouch(SeekBar b){}
         });
+        box.addView(sb,new LinearLayout.LayoutParams(-1,dp(33)));
+        return sb;
+    }
+    private View createLayout(){
+        FrameLayout frame=new FrameLayout(this);frame.setBackgroundColor(DARK);
+        glView=new GLSurfaceView(this);
+        glView.setEGLContextClientVersion(2);
+        glView.setPreserveEGLContextOnPause(false);
+        processor=new VeinRenderer(glView,this);
+        glView.setRenderer(processor);
+        glView.setRenderMode(GLSurfaceView.RENDERMODE_WHEN_DIRTY);
+        frame.addView(glView,new FrameLayout.LayoutParams(-1,-1));
 
-        LinearLayout header = column();
-        header.setPadding(dp(18), dp(12), dp(18), dp(13));
-        header.setBackground(background(Color.argb(219, 6, 17, 32), 0));
-        TextView title = text("Vien Finder", 24, Color.WHITE, true);
-        header.addView(title);
-        TextView sub = text("LIVE  •  Camera vein contrast", 12, SKY, false);
-        header.addView(sub);
-        FrameLayout.LayoutParams top = new FrameLayout.LayoutParams(-1, -2, Gravity.TOP);
-        frame.addView(header, top);
+        LinearLayout top=row();
+        top.setPadding(dp(13),dp(8),dp(11),dp(8));
+        top.setGravity(Gravity.CENTER_VERTICAL);
+        top.setBackground(background(Color.argb(218,4,15,29),0));
+        LinearLayout title=column();
+        title.addView(text("Vien Finder",21,Color.WHITE,true));
+        title.addView(text("LIVE • GPU • A56",11,CYAN,false));
+        top.addView(title,new LinearLayout.LayoutParams(0,-2,1));
+        rotationButton=button("↻");
+        top.addView(rotationButton,new LinearLayout.LayoutParams(dp(49),dp(40)));
+        rotationButton.setOnClickListener(v->{
+            rotateDegrees=(rotateDegrees+180)%360;
+            processor.setSensorOrientation(rotateDegrees);
+        });
+        controlsToggle=button("إخفاء");
+        LinearLayout.LayoutParams toggleParams=new LinearLayout.LayoutParams(dp(68),dp(40));
+        toggleParams.setMargins(dp(6),0,0,0);
+        top.addView(controlsToggle,toggleParams);
+        controlsToggle.setOnClickListener(v->{
+            boolean show=panel.getVisibility()!=View.VISIBLE;
+            panel.setVisibility(show?View.VISIBLE:View.GONE);
+            controlsToggle.setText(show?"إخفاء":"الأدوات");
+        });
+        frame.addView(top,new FrameLayout.LayoutParams(-1,-2,Gravity.TOP));
 
-        LinearLayout panel = column();
-        panel.setPadding(dp(13), dp(13), dp(13), dp(11));
-        panel.setBackground(background(PANEL, 23));
-
-        TextView modes = text("طريقة العرض", 13, Color.WHITE, true);
+        panel=column();
+        panel.setPadding(dp(11),dp(10),dp(11),dp(9));
+        panel.setBackground(background(Color.argb(244,6,18,34),20));
+        TextView modes=text("نمط إبراز الصورة",13,Color.WHITE,true);modes.setGravity(Gravity.RIGHT);
         panel.addView(modes);
-        HorizontalScrollView scroller = new HorizontalScrollView(this);
-        scroller.setHorizontalScrollBarEnabled(false);
-        LinearLayout buttons = new LinearLayout(this);
-        buttons.setOrientation(LinearLayout.HORIZONTAL);
-        String[] names = new String[]{"طبيعي", "أخضر", "R−G", "إبراز الأوردة"};
-        modeButtons = new Button[names.length];
-        for (int i = 0; i < names.length; i++) {
-            final int which = i;
-            Button b = button(names[i]);
-            modeButtons[i] = b;
-            LinearLayout.LayoutParams bp = new LinearLayout.LayoutParams(-2, dp(43));
-            bp.setMargins(0, dp(8), dp(7), dp(8));
-            buttons.addView(b, bp);
-            b.setOnClickListener(v -> { mode = which; refreshButtons(); });
+        LinearLayout modeRow=row();
+        String[] labels={"طبيعي","الأوردة","R−G","أخضر","ملون"};
+        modeButtons=new Button[5];
+        for(int i=0;i<labels.length;i++){
+            final int selection=i;
+            modeButtons[i]=button(labels[i]);
+            addWeighted(modeRow,modeButtons[i],43);
+            modeButtons[i].setOnClickListener(v->{mode=selection;updateButtonColors();applySettings();});
         }
-        scroller.addView(buttons);
-        panel.addView(scroller);
-        refreshButtons();
+        panel.addView(modeRow);updateButtonColors();
 
-        sensitivityLabel = text("الحساسية 65%", 13, Color.WHITE, false);
+        sensitivityLabel=text("الحساسية 65%",12,Color.WHITE,false);sensitivityLabel.setGravity(Gravity.RIGHT);
         panel.addView(sensitivityLabel);
-        SeekBar sens = new SeekBar(this);
-        sens.setMax(100); sens.setProgress(sensitivity);
-        sens.setProgressTintList(android.content.res.ColorStateList.valueOf(SKY));
-        sens.setThumbTintList(android.content.res.ColorStateList.valueOf(SKY));
-        panel.addView(sens);
-        sens.setOnSeekBarChangeListener(listener(value -> {
-            sensitivity = value;
-            sensitivityLabel.setText("الحساسية " + value + "%");
-        }));
+        slider(panel,sensitivity,v->{sensitivity=v;sensitivityLabel.setText("الحساسية "+v+"%");applySettings();});
 
-        contrastLabel = text("قوة التباين 58%", 13, Color.WHITE, false);
+        contrastLabel=text("قوة التباين 58%",12,Color.WHITE,false);contrastLabel.setGravity(Gravity.RIGHT);
         panel.addView(contrastLabel);
-        SeekBar con = new SeekBar(this);
-        con.setMax(100); con.setProgress(contrast);
-        con.setProgressTintList(android.content.res.ColorStateList.valueOf(SKY));
-        con.setThumbTintList(android.content.res.ColorStateList.valueOf(SKY));
-        panel.addView(con);
-        con.setOnSeekBarChangeListener(listener(value -> {
-            contrast = value;
-            contrastLabel.setText("قوة التباين " + value + "%");
-        }));
+        slider(panel,contrast,v->{contrast=v;contrastLabel.setText("قوة التباين "+v+"%");applySettings();});
 
-        LinearLayout actions = new LinearLayout(this);
-        actions.setOrientation(LinearLayout.HORIZONTAL);
-        actions.setGravity(Gravity.CENTER_VERTICAL);
-        torchButton = button("الضوء: إيقاف");
-        torchButton.setOnClickListener(v -> {
-            if (!flashlightAvailable) {
-                Toast.makeText(this, "المصباح غير متاح للكاميرا", Toast.LENGTH_SHORT).show();
-                return;
-            }
-            flashlightOn = !flashlightOn;
-            torchButton.setText(flashlightOn ? "الضوء: تشغيل" : "الضوء: إيقاف");
-            updateCameraRequest();
-        });
-        addAction(actions, torchButton, 1);
-        invertButton = button("عكس الألوان");
-        invertButton.setOnClickListener(v -> {
-            inverted = !inverted;
-            invertButton.setText(inverted ? "عكس: مفعل" : "عكس الألوان");
-        });
-        addAction(actions, invertButton, 1);
-        freezeButton = button("تجميد");
-        freezeButton.setOnClickListener(v -> {
-            frozen = !frozen;
-            freezeButton.setText(frozen ? "متابعة" : "تجميد");
-        });
-        addAction(actions, freezeButton, 1);
-        panel.addView(actions);
+        brightnessLabel=text("سطوع الصورة 50%",12,Color.WHITE,false);brightnessLabel.setGravity(Gravity.RIGHT);
+        panel.addView(brightnessLabel);
+        slider(panel,brightness,v->{brightness=v;brightnessLabel.setText("سطوع الصورة "+v+"%");applySettings();});
 
-        LinearLayout exposure = new LinearLayout(this);
-        exposure.setGravity(Gravity.CENTER_VERTICAL);
-        Button minus = button("−");
-        Button plus = button("+");
-        exposureLabel = text("EV 0.0", 12, SKY, true);
-        exposureLabel.setGravity(Gravity.CENTER);
-        exposure.addView(minus, new LinearLayout.LayoutParams(dp(55), dp(40)));
-        exposure.addView(exposureLabel, new LinearLayout.LayoutParams(0, dp(40), 1));
-        exposure.addView(plus, new LinearLayout.LayoutParams(dp(55), dp(40)));
-        minus.setOnClickListener(v -> changeExposure(-1));
-        plus.setOnClickListener(v -> changeExposure(1));
-        panel.addView(exposure);
-        infoLabel = text("جاري تهيئة الكاميرا...", 11, Color.rgb(167, 196, 216), false);
-        infoLabel.setGravity(Gravity.CENTER);
-        panel.addView(infoLabel);
+        LinearLayout quick=row();
+        torchButton=button("فلاش: إيقاف");
+        reverseButton=button("عكس");
+        freezeButton=button("تجميد");
+        Button focus=button("تركيز");
+        addWeighted(quick,torchButton,43);
+        addWeighted(quick,reverseButton,43);
+        addWeighted(quick,freezeButton,43);
+        addWeighted(quick,focus,43);
+        panel.addView(quick);
+        torchButton.setOnClickListener(v->toggleTorch());
+        reverseButton.setOnClickListener(v->{
+            reversed=!reversed;
+            reverseButton.setBackground(background(reversed?Color.rgb(0,123,151):Color.rgb(28,49,72),11));
+            applySettings();
+        });
+        freezeButton.setOnClickListener(v->{
+            frozen=!frozen;freezeButton.setText(frozen?"متابعة":"تجميد");applySettings();
+        });
+        focus.setOnClickListener(v->triggerFocus());
 
-        FrameLayout.LayoutParams bottom = new FrameLayout.LayoutParams(-1, -2, Gravity.BOTTOM);
-        bottom.setMargins(dp(9), dp(9), dp(9), dp(10));
-        frame.addView(panel, bottom);
+        LinearLayout exposureRow=row();exposureRow.setGravity(Gravity.CENTER_VERTICAL);
+        Button minus=button("EV −");Button plus=button("EV +");
+        exposureLabel=text("EV 0.0",13,CYAN,true);exposureLabel.setGravity(Gravity.CENTER);
+        exposureRow.addView(minus,new LinearLayout.LayoutParams(dp(76),dp(38)));
+        exposureRow.addView(exposureLabel,new LinearLayout.LayoutParams(0,dp(38),1));
+        exposureRow.addView(plus,new LinearLayout.LayoutParams(dp(76),dp(38)));
+        minus.setOnClickListener(v->changeExposure(-1));
+        plus.setOnClickListener(v->changeExposure(1));
+        panel.addView(exposureRow);
+
+        status=text("تهيئة الكاميرا...",11,Color.rgb(177,205,219),false);
+        status.setGravity(Gravity.CENTER);
+        panel.addView(status);
+
+        FrameLayout.LayoutParams p=new FrameLayout.LayoutParams(-1,-2,Gravity.BOTTOM);
+        p.setMargins(dp(8),0,dp(8),dp(9));
+        frame.addView(panel,p);
+        applySettings();
         return frame;
     }
-
-    private interface ValueChange { void change(int value); }
-    private SeekBar.OnSeekBarChangeListener listener(ValueChange change) {
-        return new SeekBar.OnSeekBarChangeListener() {
-            @Override public void onProgressChanged(SeekBar b, int p, boolean user) { change.change(p); }
-            @Override public void onStartTrackingTouch(SeekBar b) { }
-            @Override public void onStopTrackingTouch(SeekBar b) { }
-        };
+    private void applySettings(){
+        if(processor!=null)processor.setSettings(mode,sensitivity,contrast,brightness,reversed,frozen);
     }
-    private void addAction(LinearLayout row, Button b, int weight) {
-        LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(0, dp(43), weight);
-        lp.setMargins(dp(3), dp(7), dp(3), dp(4));
-        row.addView(b, lp);
-    }
-    private void refreshButtons() {
-        if (modeButtons == null) return;
-        for (int i = 0; i < modeButtons.length; i++) {
-            modeButtons[i].setBackground(background(i == mode ? Color.rgb(0, 130, 159) : Color.rgb(29, 48, 68), 12));
-        }
-    }
-    private void changeExposure(int direction) {
-        int amount = Math.max(1, Math.round(0.5f / Math.max(exposureStep, 0.01f)));
-        exposureIndex = Math.max(exposureRange.getLower(), Math.min(exposureRange.getUpper(), exposureIndex + direction * amount));
-        exposureLabel.setText(String.format(java.util.Locale.US, "EV %+.1f", exposureIndex * exposureStep));
-        updateCameraRequest();
+    private void updateStatus(String text){runOnUiThread(()->{if(status!=null)status.setText(text);});}
+    @Override public void onFps(int fps){updateStatus("GPU • "+fps+" FPS • بدون إنترنت");}
+    @Override public void onRenderError(String error){updateStatus("معالجة الصورة: "+error);}
+    @Override public void onCameraSurface(SurfaceTexture texture){
+        runOnUiThread(()->{
+            if(!resumed)return;
+            if(cameraTexture!=null && cameraTexture!=texture)closeCamera();
+            cameraTexture=texture;
+            openCamera();
+        });
     }
 
-    @Override protected void onResume() {
+    @Override protected void onResume(){
         super.onResume();
-        resumed = true;
-        cameraThread = new HandlerThread("vien-camera");
+        resumed=true;
+        cameraThread=new HandlerThread("vien-camera");
         cameraThread.start();
-        cameraHandler = new Handler(cameraThread.getLooper());
-        if (checkSelfPermission(Manifest.permission.CAMERA) == PackageManager.PERMISSION_GRANTED) openCamera();
-        else requestPermissions(new String[]{Manifest.permission.CAMERA}, 41);
+        cameraHandler=new Handler(cameraThread.getLooper());
+        glView.onResume();
+        if(checkSelfPermission(Manifest.permission.CAMERA)==PackageManager.PERMISSION_GRANTED){
+            if(cameraTexture!=null)openCamera();
+        }else requestPermissions(new String[]{Manifest.permission.CAMERA},27);
     }
-    @Override protected void onPause() {
-        resumed = false;
+    @Override protected void onPause(){
+        resumed=false;
         closeCamera();
-        if (cameraThread != null) {
-            cameraThread.quitSafely();
-            cameraThread = null;
-            cameraHandler = null;
-        }
+        glView.onPause();
+        if(cameraThread!=null){cameraThread.quitSafely();cameraThread=null;cameraHandler=null;}
+        cameraTexture=null;
         super.onPause();
     }
-    @Override public void onRequestPermissionsResult(int code, String[] permissions, int[] results) {
-        super.onRequestPermissionsResult(code, permissions, results);
-        if (code == 41 && results.length > 0 && results[0] == PackageManager.PERMISSION_GRANTED && resumed) openCamera();
-        else if (code == 41) infoLabel.setText("لازم تسمح باستخدام الكاميرا من إعدادات التطبيق");
+    @Override public void onRequestPermissionsResult(int code,String[] permissions,int[] results){
+        super.onRequestPermissionsResult(code,permissions,results);
+        if(code==27 && results.length>0 && results[0]==PackageManager.PERMISSION_GRANTED){
+            if(resumed)openCamera();
+        }else if(code==27)updateStatus("اسمح باستخدام الكاميرا من إعدادات Android");
     }
-    private void openCamera() {
-        if (!resumed || opening || device != null || cameraHandler == null) return;
-        try {
-            cameraManager = (CameraManager) getSystemService(Context.CAMERA_SERVICE);
-            cameraId = null;
-            for (String id : cameraManager.getCameraIdList()) {
-                CameraCharacteristics ch = cameraManager.getCameraCharacteristics(id);
-                if (ch.get(CameraCharacteristics.LENS_FACING) == CameraCharacteristics.LENS_FACING_BACK) {
-                    cameraId = id;
-                    break;
+    private void openCamera(){
+        if(!resumed || cameraTexture==null || cameraHandler==null || device!=null || opening)return;
+        if(checkSelfPermission(Manifest.permission.CAMERA)!=PackageManager.PERMISSION_GRANTED)return;
+        try{
+            manager=(CameraManager)getSystemService(Context.CAMERA_SERVICE);
+            CameraCharacteristics chosen=null;
+            cameraId=null;
+            int best=-1000;
+            for(String id:manager.getCameraIdList()){
+                CameraCharacteristics c=manager.getCameraCharacteristics(id);
+                Integer facing=c.get(CameraCharacteristics.LENS_FACING);
+                if(facing==null || facing!=CameraCharacteristics.LENS_FACING_BACK)continue;
+                StreamConfigurationMap map=c.get(CameraCharacteristics.SCALER_STREAM_CONFIGURATION_MAP);
+                if(map==null || map.getOutputSizes(SurfaceTexture.class)==null)continue;
+                Boolean flash=c.get(CameraCharacteristics.FLASH_INFO_AVAILABLE);
+                float[] focals=c.get(CameraCharacteristics.LENS_INFO_AVAILABLE_FOCAL_LENGTHS);
+                float focal=(focals!=null&&focals.length>0)?focals[0]:0;
+                int score=Boolean.TRUE.equals(flash)?100:0;
+                score+=(focal>=3f && focal<=8f)?35:0;
+                if(id.equals("0"))score+=8;
+                if(score>best){best=score;chosen=c;cameraId=id;}
+            }
+            if(chosen==null){updateStatus("لا توجد كاميرا خلفية مناسبة");return;}
+            flashAvailable=Boolean.TRUE.equals(chosen.get(CameraCharacteristics.FLASH_INFO_AVAILABLE));
+            final Integer sensor=chosen.get(CameraCharacteristics.SENSOR_ORIENTATION);
+            rotateDegrees=sensor==null?90:sensor;
+            processor.setSensorOrientation(rotateDegrees);
+            StreamConfigurationMap map=chosen.get(CameraCharacteristics.SCALER_STREAM_CONFIGURATION_MAP);
+            Size[] sizes=map.getOutputSizes(SurfaceTexture.class);
+            Size preferred=sizes[0];long bestDiff=Long.MAX_VALUE;
+            for(Size s:sizes){
+                if(s.getWidth()<640 || s.getHeight()<360 || s.getWidth()>1920)continue;
+                long diff=Math.abs((long)s.getWidth()*s.getHeight()-1280L*720L);
+                if(Math.abs(s.getWidth()*9-s.getHeight()*16)>64)diff+=5000000;
+                if(diff<bestDiff){bestDiff=diff;preferred=s;}
+            }
+            cameraTexture.setDefaultBufferSize(preferred.getWidth(),preferred.getHeight());
+            processor.setInputSize(preferred.getWidth(),preferred.getHeight());
+            outputSurface=new Surface(cameraTexture);
+            Range<Integer> ev=chosen.get(CameraCharacteristics.CONTROL_AE_COMPENSATION_RANGE);
+            if(ev!=null)exposureRange=ev;
+            Rational step=chosen.get(CameraCharacteristics.CONTROL_AE_COMPENSATION_STEP);
+            if(step!=null && step.floatValue()>0)exposureStep=step.floatValue();
+            Range<Integer>[] fps=chosen.get(CameraCharacteristics.CONTROL_AE_AVAILABLE_TARGET_FPS_RANGES);
+            fpsRange=null;
+            if(fps!=null){
+                int bestFps=9999;
+                for(Range<Integer> r:fps){
+                    if(r.getUpper()<24 || r.getLower()>30)continue;
+                    int score=Math.abs(r.getUpper()-30)*20+Math.abs(r.getLower()-15);
+                    if(score<bestFps){bestFps=score;fpsRange=r;}
                 }
             }
-            if (cameraId == null) { infoLabel.setText("لا توجد كاميرا خلفية"); return; }
-            CameraCharacteristics ch = cameraManager.getCameraCharacteristics(cameraId);
-            Integer rotate = ch.get(CameraCharacteristics.SENSOR_ORIENTATION);
-            if (rotate != null) sensorRotation = rotate;
-            Boolean flash = ch.get(CameraCharacteristics.FLASH_INFO_AVAILABLE);
-            flashlightAvailable = Boolean.TRUE.equals(flash);
-            Range<Integer> evRange = ch.get(CameraCharacteristics.CONTROL_AE_COMPENSATION_RANGE);
-            if (evRange != null) exposureRange = evRange;
-            android.util.Rational evStep = ch.get(CameraCharacteristics.CONTROL_AE_COMPENSATION_STEP);
-            if (evStep != null && evStep.floatValue() > 0) exposureStep = evStep.floatValue();
-
-            StreamConfigurationMap map = ch.get(CameraCharacteristics.SCALER_STREAM_CONFIGURATION_MAP);
-            Size[] sizes = map == null ? null : map.getOutputSizes(android.graphics.ImageFormat.YUV_420_888);
-            if (sizes == null || sizes.length == 0) {
-                infoLabel.setText("صيغة الفيديو غير مدعومة");
-                return;
-            }
-            Size chosen = sizes[0];
-            long difference = Long.MAX_VALUE;
-            for (Size s : sizes) {
-                int sw = s.getWidth(), sh = s.getHeight();
-                if (sw < 400 || sh < 300 || sw > 1920) continue;
-                long score = Math.abs((long) sw * sh - 640L * 480L);
-                if (Math.abs(sw * 3 - sh * 4) > 10) score += 4000000L;
-                if (score < difference) { difference = score; chosen = s; }
-            }
-            imageWidth = chosen.getWidth();
-            imageHeight = chosen.getHeight();
-            initBuffers();
-            reader = ImageReader.newInstance(imageWidth, imageHeight, android.graphics.ImageFormat.YUV_420_888, 3);
-            reader.setOnImageAvailableListener(r -> {
-                Image image = null;
-                try {
-                    image = r.acquireLatestImage();
-                    if (image == null) return;
-                    long now = SystemClock.elapsedRealtime();
-                    if (frozen || now - lastFrameTime < 43) return;
-                    lastFrameTime = now;
-                    process(image);
-                } catch (Exception ignored) {
-                } finally {
-                    if (image != null) image.close();
+            opening=true;
+            manager.openCamera(cameraId,new CameraDevice.StateCallback(){
+                @Override public void onOpened(CameraDevice cam){
+                    opening=false;
+                    if(!resumed){cam.close();return;}
+                    device=cam;startCameraSession();
                 }
-            }, cameraHandler);
-            opening = true;
-            cameraManager.openCamera(cameraId, new CameraDevice.StateCallback() {
-                @Override public void onOpened(CameraDevice opened) {
-                    opening = false;
-                    if (!resumed) { opened.close(); return; }
-                    device = opened;
-                    startCapture();
+                @Override public void onDisconnected(CameraDevice cam){
+                    cam.close();if(device==cam)device=null;opening=false;
+                    updateStatus("تم فصل الكاميرا");
                 }
-                @Override public void onDisconnected(CameraDevice disconnected) {
-                    disconnected.close();
-                    if (device == disconnected) device = null;
-                    opening = false;
+                @Override public void onError(CameraDevice cam,int error){
+                    cam.close();if(device==cam)device=null;opening=false;
+                    updateStatus("خطأ تشغيل الكاميرا: "+error);
                 }
-                @Override public void onError(CameraDevice bad, int error) {
-                    bad.close();
-                    if (device == bad) device = null;
-                    opening = false;
-                    runOnUiThread(() -> infoLabel.setText("تعذّر تشغيل الكاميرا: " + error));
+            },cameraHandler);
+        }catch(Exception e){opening=false;updateStatus("تعذر فتح الكاميرا: "+e.getMessage());}
+    }
+    private void startCameraSession(){
+        if(device==null || outputSurface==null)return;
+        try{
+            request=device.createCaptureRequest(CameraDevice.TEMPLATE_PREVIEW);
+            request.addTarget(outputSurface);
+            request.set(CaptureRequest.CONTROL_MODE,CaptureRequest.CONTROL_MODE_AUTO);
+            request.set(CaptureRequest.CONTROL_AE_MODE,CaptureRequest.CONTROL_AE_MODE_ON);
+            request.set(CaptureRequest.CONTROL_AF_MODE,CaptureRequest.CONTROL_AF_MODE_CONTINUOUS_PICTURE);
+            if(fpsRange!=null)request.set(CaptureRequest.CONTROL_AE_TARGET_FPS_RANGE,fpsRange);
+            device.createCaptureSession(Collections.singletonList(outputSurface),new CameraCaptureSession.StateCallback(){
+                @Override public void onConfigured(CameraCaptureSession configured){
+                    if(!resumed){configured.close();return;}
+                    session=configured;
+                    setRequest();
                 }
-            }, cameraHandler);
-        } catch (Exception e) {
-            opening = false;
-            infoLabel.setText("خطأ الكاميرا: " + e.getMessage());
+                @Override public void onConfigureFailed(CameraCaptureSession configured){
+                    updateStatus("تعذر تشغيل تدفق الفيديو");
+                }
+            },cameraHandler);
+        }catch(Exception e){updateStatus("تعذر بدء الكاميرا: "+e.getMessage());}
+    }
+    private final CameraCaptureSession.CaptureCallback feedback=new CameraCaptureSession.CaptureCallback(){
+        @Override public void onCaptureFailed(CameraCaptureSession sess,CaptureRequest r,android.hardware.camera2.CaptureFailure failure){
+            updateStatus("فشل طلب الكاميرا: "+failure.getReason());
         }
-    }
-    private void initBuffers() {
-        int count = imageWidth * imageHeight;
-        pixels = new int[count];
-        feature = new int[count];
-        green = new int[count];
-        featureSum = new int[(imageWidth + 1) * (imageHeight + 1)];
-        greenSum = new int[(imageWidth + 1) * (imageHeight + 1)];
-        bitmap = Bitmap.createBitmap(imageWidth, imageHeight, Bitmap.Config.ARGB_8888);
-    }
-    private void startCapture() {
-        if (device == null || reader == null) return;
-        try {
-            request = device.createCaptureRequest(CameraDevice.TEMPLATE_PREVIEW);
-            request.addTarget(reader.getSurface());
-            request.set(CaptureRequest.CONTROL_MODE, CaptureRequest.CONTROL_MODE_AUTO);
-            request.set(CaptureRequest.CONTROL_AF_MODE, CaptureRequest.CONTROL_AF_MODE_CONTINUOUS_PICTURE);
-            request.set(CaptureRequest.CONTROL_AE_MODE, CaptureRequest.CONTROL_AE_MODE_ON);
-            device.createCaptureSession(Collections.singletonList(reader.getSurface()), new CameraCaptureSession.StateCallback() {
-                @Override public void onConfigured(CameraCaptureSession s) {
-                    if (!resumed) { s.close(); return; }
-                    session = s;
-                    updateCameraRequest();
+    };
+    private void setRequest(){
+        if(cameraHandler==null)return;
+        cameraHandler.post(()->{
+            if(request==null || session==null)return;
+            try{
+                request.set(CaptureRequest.CONTROL_AE_MODE,CaptureRequest.CONTROL_AE_MODE_ON);
+                request.set(CaptureRequest.FLASH_MODE,flashAvailable&&torchRequested?
+                    CaptureRequest.FLASH_MODE_TORCH:CaptureRequest.FLASH_MODE_OFF);
+                request.set(CaptureRequest.CONTROL_AE_EXPOSURE_COMPENSATION,exposure);
+                session.setRepeatingRequest(request.build(),feedback,cameraHandler);
+                runOnUiThread(()->{
+                    if(torchButton!=null){
+                        torchButton.setText(torchRequested?"فلاش: تشغيل":"فلاش: إيقاف");
+                        torchButton.setBackground(background(torchRequested?Color.rgb(0,123,151):Color.rgb(28,49,72),11));
+                    }
+                });
+            }catch(Exception e){
+                if(torchRequested){
+                    torchRequested=false;
+                    runOnUiThread(()->{torchButton.setText("فلاش: فشل");});
                 }
-                @Override public void onConfigureFailed(CameraCaptureSession s) {
-                    runOnUiThread(() -> infoLabel.setText("تعذّر تهيئة تدفق الكاميرا"));
-                }
-            }, cameraHandler);
-        } catch (CameraAccessException e) {
-            runOnUiThread(() -> infoLabel.setText("خطأ تشغيل الفيديو"));
-        }
-    }
-    private void updateCameraRequest() {
-        if (cameraHandler == null) return;
-        cameraHandler.post(() -> {
-            if (session == null || request == null) return;
-            try {
-                request.set(CaptureRequest.CONTROL_AE_EXPOSURE_COMPENSATION, exposureIndex);
-                request.set(CaptureRequest.FLASH_MODE,
-                        flashlightOn && flashlightAvailable ? CaptureRequest.FLASH_MODE_TORCH : CaptureRequest.FLASH_MODE_OFF);
-                session.setRepeatingRequest(request.build(), null, cameraHandler);
-            } catch (Exception e) {
-                runOnUiThread(() -> infoLabel.setText("تعذّر تحديث إعدادات التصوير"));
+                updateStatus("فشل التحكم بالفلاش/التعريض: "+e.getMessage());
             }
         });
     }
-    private void closeCamera() {
-        try { if (session != null) session.close(); } catch (Exception ignored) { }
-        session = null;
-        try { if (device != null) device.close(); } catch (Exception ignored) { }
-        device = null;
-        try { if (reader != null) reader.close(); } catch (Exception ignored) { }
-        reader = null;
-        opening = false;
-        flashlightOn = false;
+    private void toggleTorch(){
+        if(!flashAvailable){Toast.makeText(this,"الفلاش غير متاح للكاميرا المحددة",Toast.LENGTH_SHORT).show();return;}
+        if(session==null){Toast.makeText(this,"الكاميرا لم تبدأ بعد",Toast.LENGTH_SHORT).show();return;}
+        torchRequested=!torchRequested;
+        setRequest();
     }
-
-    private static int clamp(int v) { return v < 0 ? 0 : Math.min(v, 255); }
-    private void process(Image image) {
-        Image.Plane[] planes = image.getPlanes();
-        ByteBuffer yData = planes[0].getBuffer();
-        ByteBuffer uData = planes[1].getBuffer();
-        ByteBuffer vData = planes[2].getBuffer();
-        int ys = planes[0].getRowStride(), yp = planes[0].getPixelStride();
-        int us = planes[1].getRowStride(), up = planes[1].getPixelStride();
-        int vs = planes[2].getRowStride(), vp = planes[2].getPixelStride();
-        int w = imageWidth, h = imageHeight, stride = w + 1;
-        if (pixels == null || feature == null) return;
-        for (int y = 0; y < h; y++) {
-            int sumF = 0, sumG = 0, row = y * w;
-            int upper = y * stride, lower = (y + 1) * stride;
-            for (int x = 0; x < w; x++) {
-                int yy = yData.get(y * ys + x * yp) & 255;
-                int uu = (uData.get((y >> 1) * us + (x >> 1) * up) & 255) - 128;
-                int vv = (vData.get((y >> 1) * vs + (x >> 1) * vp) & 255) - 128;
-                int red = clamp((int)(yy + 1.403f * vv));
-                int gg = clamp((int)(yy - 0.344f * uu - 0.714f * vv));
-                int blue = clamp((int)(yy + 1.770f * uu));
-                int idx = row + x;
-                green[idx] = gg;
-                feature[idx] = red - gg;
-                pixels[idx] = Color.rgb(red, gg, blue);
-                sumF += feature[idx]; sumG += gg;
-                featureSum[lower + x + 1] = featureSum[upper + x + 1] + sumF;
-                greenSum[lower + x + 1] = greenSum[upper + x + 1] + sumG;
-            }
-        }
-        int activeMode = mode;
-        if (activeMode != 0) {
-            int threshold = 15 - sensitivity * 13 / 100;
-            float gain = 4.5f + contrast * 0.20f;
-            int sign = inverted ? -1 : 1;
-            int radius = 15;
-            for (int y = 0; y < h; y++) {
-                int top = Math.max(0, y - radius), bottom = Math.min(h, y + radius + 1);
-                for (int x = 0; x < w; x++) {
-                    int left = Math.max(0, x - radius), right = Math.min(w, x + radius + 1);
-                    int area = (right - left) * (bottom - top);
-                    int idx = y * w + x;
-                    int fMean = (featureSum[bottom * stride + right] -
-                                 featureSum[top * stride + right] -
-                                 featureSum[bottom * stride + left] +
-                                 featureSum[top * stride + left]) / area;
-                    int gMean = (greenSum[bottom * stride + right] -
-                                 greenSum[top * stride + right] -
-                                 greenSum[bottom * stride + left] +
-                                 greenSum[top * stride + left]) / area;
-                    float deviation = sign * ((feature[idx] - fMean) * 0.85f +
-                                                    (gMean - green[idx]) * 0.38f);
-                    int intensity = clamp((int)(Math.max(0, deviation - threshold) * gain));
-                    if (activeMode == 1) {
-                        int z = clamp((int)(green[idx] - (gMean - green[idx]) * gain * 0.55f));
-                        pixels[idx] = Color.rgb(z, z, z);
-                    } else if (activeMode == 2) {
-                        int z = clamp((int)(102 + (deviation - threshold) * gain * 0.75f));
-                        pixels[idx] = Color.rgb(z, z, z);
-                    } else {
-                        int base = pixels[idx];
-                        int alpha = Math.min(217, intensity * 2);
-                        int red = Color.red(base) * (255 - alpha) / 255;
-                        int gg = Color.green(base) + (255 - Color.green(base)) * alpha / 255;
-                        int blue = Color.blue(base) + (255 - Color.blue(base)) * alpha / 255;
-                        pixels[idx] = Color.rgb(red, gg, blue);
-                    }
-                }
-            }
-        }
-        bitmap.setPixels(pixels, 0, w, 0, 0, w, h);
-        render();
-        measuredFrames++;
-        long now = SystemClock.elapsedRealtime();
-        if (now - measureTime > 1200) {
-            final int fps = Math.round(1000f * measuredFrames / Math.max(1, now - measureTime));
-            measureTime = now;
-            measuredFrames = 0;
-            runOnUiThread(() -> {
-                if (resumed) infoLabel.setText(imageWidth + "×" + imageHeight + "  •  " + fps + " FPS  •  Offline");
-            });
-        }
+    private void triggerFocus(){
+        if(cameraHandler==null)return;
+        cameraHandler.post(()->{
+            if(request==null||session==null)return;
+            try{
+                request.set(CaptureRequest.CONTROL_AF_TRIGGER,CaptureRequest.CONTROL_AF_TRIGGER_START);
+                session.capture(request.build(),null,cameraHandler);
+                request.set(CaptureRequest.CONTROL_AF_TRIGGER,CaptureRequest.CONTROL_AF_TRIGGER_IDLE);
+                setRequest();
+            }catch(Exception e){updateStatus("تعذر إعادة التركيز");}
+        });
     }
-    private void render() {
-        if (holder == null || !holder.getSurface().isValid()) return;
-        Canvas canvas = null;
-        try {
-            canvas = holder.lockCanvas();
-            if (canvas == null) return;
-            canvas.drawColor(Color.BLACK);
-            float cw = canvas.getWidth(), ch = canvas.getHeight();
-            int rotation = ((sensorRotation % 360) + 360) % 360;
-            int rotatedWidth = rotation == 90 || rotation == 270 ? imageHeight : imageWidth;
-            int rotatedHeight = rotation == 90 || rotation == 270 ? imageWidth : imageHeight;
-            float scale = Math.max(cw / rotatedWidth, ch / rotatedHeight);
-            screenMatrix.reset();
-            screenMatrix.postTranslate(-imageWidth / 2f, -imageHeight / 2f);
-            screenMatrix.postRotate(rotation);
-            screenMatrix.postScale(scale, scale);
-            screenMatrix.postTranslate(cw / 2f, ch / 2f);
-            canvas.drawBitmap(bitmap, screenMatrix, screenPaint);
-        } catch (Exception ignored) {
-        } finally {
-            if (canvas != null) {
-                try { holder.unlockCanvasAndPost(canvas); } catch (Exception ignored) { }
-            }
-        }
+    private void changeExposure(int delta){
+        int amount=Math.max(1,Math.round(0.5f/Math.max(0.01f,exposureStep)));
+        exposure=Math.max(exposureRange.getLower(),Math.min(exposureRange.getUpper(),exposure+delta*amount));
+        exposureLabel.setText(String.format(Locale.US,"EV %+.1f",exposure*exposureStep));
+        setRequest();
+    }
+    private void closeCamera(){
+        torchRequested=false;
+        try{if(session!=null)session.close();}catch(Exception ignored){}
+        session=null;
+        try{if(device!=null)device.close();}catch(Exception ignored){}
+        device=null;
+        try{if(outputSurface!=null)outputSurface.release();}catch(Exception ignored){}
+        outputSurface=null;
+        request=null;opening=false;
     }
 }
