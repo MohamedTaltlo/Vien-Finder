@@ -33,7 +33,7 @@ public final class VeinRenderer implements GLSurfaceView.Renderer {
     private int frameWidth=640,frameHeight=360;
     private volatile int inputWidth=1280, inputHeight=720;
     private volatile int sensorOrientation=90;
-    private volatile boolean freeze=false, reverse=false;
+    private volatile boolean freeze=false, reverse=false, compare=false;
     private volatile int mode=1;
     private volatile float sensitivity=0.65f, contrast=0.60f, brightness=0.50f;
     private boolean hasFrame=false;
@@ -56,63 +56,74 @@ public final class VeinRenderer implements GLSurfaceView.Renderer {
         "void main(){vec2 p=(uMatrix*vec4(vUv,0.,1.)).xy;gl_FragColor=texture2D(uCamera,p);}";
 
     private static final String PROCESS_FS=
-        "precision highp float;varying vec2 vUv;uniform sampler2D uFrame;"+
-        "uniform vec2 uPixel;uniform vec2 uAspect;uniform float uSensitivity;"+
-        "uniform float uContrast;uniform float uBrightness;uniform float uRotate;"+
-        "uniform float uReverse;uniform int uMode;"+
-        "vec3 sampleAt(vec2 p){return texture2D(uFrame,clamp(p,vec2(0.003),vec2(0.997))).rgb;}"+
-        "float chroma(vec3 c){return (c.r-0.82*c.g)/(c.r+c.g+0.20);}"+
-        "float lum(vec3 c){return dot(c,vec3(0.30,0.59,0.11));}"+
-        "void main(){"+
-        // Screen UV -> camera-landscape UV, with center crop respecting aspect ratio.
-        "vec2 p=vUv;"+
-        "float sourcePortraitAspect=uAspect.y;"+
-        "float displayPortraitAspect=uAspect.x;"+
-        "p=vec2(0.5)+(p-vec2(0.5))*vec2(min(1.,displayPortraitAspect/sourcePortraitAspect),min(1.,sourcePortraitAspect/displayPortraitAspect));"+
-        "vec2 uv; if(uRotate<0.5)uv=p;else if(uRotate<1.5)uv=vec2(p.y,1.-p.x);"+
-        "else if(uRotate<2.5)uv=vec2(1.-p.x,1.-p.y);else uv=vec2(1.-p.y,p.x);"+
-        "vec3 original=sampleAt(uv);"+
-        "if(uMode==0){gl_FragColor=vec4(original,1.);return;}"+
-        // 3x3 low pass filters remove tiny hairs, sensor noise and pixel-level texture.
-        "vec2 d=uPixel*vec2(2.6);"+
-        "vec3 small=(sampleAt(uv)*4.0+"+
-        "sampleAt(uv+vec2(d.x,0.))+sampleAt(uv-vec2(d.x,0.))+"+
-        "sampleAt(uv+vec2(0.,d.y))+sampleAt(uv-vec2(0.,d.y))+"+
-        "sampleAt(uv+d)+sampleAt(uv-d)+"+
-        "sampleAt(uv+vec2(d.x,-d.y))+sampleAt(uv+vec2(-d.x,d.y)))/12.0;"+
-        // Larger surrounding tissue level: smooth, local illumination normalization.
-        "vec2 q=uPixel*(11.0+uSensitivity*6.0);"+
-        "vec3 broad=(sampleAt(uv+vec2(q.x,0.))+sampleAt(uv-vec2(q.x,0.))+"+
-        "sampleAt(uv+vec2(0.,q.y))+sampleAt(uv-vec2(0.,q.y))+"+
-        "sampleAt(uv+q)+sampleAt(uv-q)+"+
-        "sampleAt(uv+vec2(q.x,-q.y))+sampleAt(uv+vec2(-q.x,q.y)))*0.125;"+
-        "float spectral=(chroma(small)-chroma(broad));"+
-        "float greenContrast=(broad.g-small.g);"+
-        "float signal=(spectral*1.90+greenContrast*0.23);"+
-        "signal*=mix(1.,-1.,uReverse);"+
-        // Smooth contrast rather than binary cyan thresholds. Avoid clipped cyan speckle.
-        "float detail=lum(small)-lum(broad);"+
-        "float gain=3.0+uContrast*11.5;"+
-        "float shade=0.70+(uBrightness-0.5)*0.50;"+
-        "float vein=clamp(signal*gain*(0.9+uSensitivity*1.1),-0.52,0.52);"+
-        "vec3 color;"+
-        "if(uMode==1){"+
-        "float gray=clamp(shade+detail*1.1-vein*1.38,0.,1.);"+
-        "color=vec3(gray);"+
-        "}else if(uMode==2){"+
-        "float gray=clamp(0.53+(uBrightness-.5)*.5+spectral*gain*2.8,0.,1.);"+
-        "if(uReverse>0.5)gray=1.-gray;"+
-        "color=vec3(gray);"+
-        "}else if(uMode==3){"+
-        "float gray=clamp(shade+detail*1.5+greenContrast*gain*1.7,0.,1.);"+
-        "if(uReverse>0.5)gray=1.-gray;"+
-        "color=vec3(gray);"+
-        "}else{"+
-        "float amount=smoothstep(0.018,0.22,max(0.,vein))*0.85;"+
-        "color=mix(original,vec3(original.r*0.3,original.g*0.39,original.b*0.63),amount);"+
-        "}"+
-        "gl_FragColor=vec4(color,1.);"+
-        "}";
+        "precision highp float;\n"+
+        "varying vec2 vUv;\n"+
+        "uniform sampler2D uFrame;\n"+
+        "uniform vec2 uPixel;\n"+
+        "uniform vec2 uAspect;\n"+
+        "uniform float uSensitivity;\n"+
+        "uniform float uContrast;\n"+
+        "uniform float uBrightness;\n"+
+        "uniform float uRotate;\n"+
+        "uniform float uReverse;\n"+
+        "uniform float uCompare;\n"+
+        "uniform int uMode;\n"+
+        "vec3 sampleAt(vec2 p){return texture2D(uFrame,clamp(p,vec2(0.003),vec2(0.997))).rgb;}\n"+
+        "float lum(vec3 c){return dot(c,vec3(0.299,0.587,0.114));}\n"+
+        "void main(){\n"+
+        "vec2 p=vUv;\n"+
+        "float sourcePortraitAspect=uAspect.y;\n"+
+        "float displayPortraitAspect=uAspect.x;\n"+
+        "p=vec2(0.5)+(p-vec2(0.5))*vec2(min(1.0,displayPortraitAspect/sourcePortraitAspect),min(1.0,sourcePortraitAspect/displayPortraitAspect));\n"+
+        "vec2 uv;\n"+
+        "if(uRotate<0.5){uv=p;}\n"+
+        "else if(uRotate<1.5){uv=vec2(p.y,1.0-p.x);}\n"+
+        "else if(uRotate<2.5){uv=vec2(1.0-p.x,1.0-p.y);}\n"+
+        "else{uv=vec2(1.0-p.y,p.x);}\n"+
+        "vec3 original=sampleAt(uv);\n"+
+        "if(uMode==0){gl_FragColor=vec4(original,1.0);return;}\n"+
+        "if(uCompare>0.5 && vUv.x<0.497){gl_FragColor=vec4(original,1.0);return;}\n"+
+        "if(uCompare>0.5 && abs(vUv.x-0.5)<0.003){gl_FragColor=vec4(0.0,0.82,0.87,1.0);return;}\n"+
+        "vec2 d=uPixel*2.2;\n"+
+        "vec3 small=(original*4.0+\n"+
+        "sampleAt(uv+vec2(d.x,0.0))+sampleAt(uv-vec2(d.x,0.0))+\n"+
+        "sampleAt(uv+vec2(0.0,d.y))+sampleAt(uv-vec2(0.0,d.y))+\n"+
+        "sampleAt(uv+d)+sampleAt(uv-d)+\n"+
+        "sampleAt(uv+vec2(d.x,-d.y))+sampleAt(uv+vec2(-d.x,d.y)))/12.0;\n"+
+        "vec2 q=uPixel*(9.0+uSensitivity*5.0);\n"+
+        "vec3 broad=(small*4.0+\n"+
+        "sampleAt(uv+vec2(q.x,0.0))+sampleAt(uv-vec2(q.x,0.0))+\n"+
+        "sampleAt(uv+vec2(0.0,q.y))+sampleAt(uv-vec2(0.0,q.y))+\n"+
+        "sampleAt(uv+q)+sampleAt(uv-q)+\n"+
+        "sampleAt(uv+vec2(q.x,-q.y))+sampleAt(uv+vec2(-q.x,q.y)))/12.0;\n"+
+        "float y0=lum(original);\n"+
+        "float ySmall=lum(small);\n"+
+        "float yBroad=lum(broad);\n"+
+        "float redGreen=(small.r-small.g)-(broad.r-broad.g);\n"+
+        "float greenDrop=broad.g-small.g;\n"+
+        "float edgeGate=1.0-smoothstep(0.09,0.25,abs(ySmall-yBroad));\n"+
+        "float strength=0.30+uSensitivity*0.95;\n"+
+        "float gain=1.0+uContrast*2.8;\n"+
+        "float sign= uReverse>0.5 ? -1.0 : 1.0;\n"+
+        "float signal=clamp((redGreen*0.9+greenDrop*0.2)*strength*gain*edgeGate*sign,-0.085,0.085);\n"+
+        "float light=(uBrightness-0.5)*0.22;\n"+
+        "float base=clamp(0.09+0.80*mix(y0,ySmall,0.25)+light,0.10,0.90);\n"+
+        "vec3 color;\n"+
+        "if(uMode==1){\n"+
+        "float gray=clamp(base-signal,0.08,0.94);\n"+
+        "color=vec3(gray);\n"+
+        "}else if(uMode==2){\n"+
+        "float rg=clamp(redGreen*gain*strength*sign,-0.085,0.085);\n"+
+        "color=vec3(clamp(base-rg,0.08,0.94));\n"+
+        "}else if(uMode==3){\n"+
+        "float green=clamp(0.10+0.80*small.g+light-clamp(greenDrop*strength*gain*0.45*sign,-0.085,0.085),0.08,0.94);\n"+
+        "color=vec3(green);\n"+
+        "}else{\n"+
+        "float shift=clamp(signal*1.1,-0.10,0.10);\n"+
+        "color=clamp(original*(1.0-shift)+vec3(light*0.40),vec3(0.03),vec3(0.98));\n"+
+        "}\n"+
+        "gl_FragColor=vec4(color,1.0);\n"+
+        "}\n";
 
     public VeinRenderer(GLSurfaceView view, Listener listener){
         this.view=view;
@@ -120,9 +131,9 @@ public final class VeinRenderer implements GLSurfaceView.Renderer {
         quad=ByteBuffer.allocateDirect(quadVertices.length*4).order(ByteOrder.nativeOrder()).asFloatBuffer();
         quad.put(quadVertices).position(0);
     }
-    public void setSettings(int newMode,int strength,int newContrast,int newBrightness,boolean invert,boolean frozen){
+    public void setSettings(int newMode,int strength,int newContrast,int newBrightness,boolean invert,boolean frozen,boolean comparison){
         mode=newMode;sensitivity=strength/100f;contrast=newContrast/100f;
-        brightness=newBrightness/100f;reverse=invert;freeze=frozen;
+        brightness=newBrightness/100f;reverse=invert;freeze=frozen;compare=comparison;
         view.requestRender();
     }
     public void setSensorOrientation(int degree){sensorOrientation=degree;view.requestRender();}
@@ -243,6 +254,7 @@ public final class VeinRenderer implements GLSurfaceView.Renderer {
             GLES20.glUniform1f(GLES20.glGetUniformLocation(outputProgram,"uContrast"),contrast);
             GLES20.glUniform1f(GLES20.glGetUniformLocation(outputProgram,"uBrightness"),brightness);
             GLES20.glUniform1f(GLES20.glGetUniformLocation(outputProgram,"uReverse"),reverse?1f:0f);
+            GLES20.glUniform1f(GLES20.glGetUniformLocation(outputProgram,"uCompare"),compare?1f:0f);
             int rotation=((sensorOrientation%360)+360)%360;
             GLES20.glUniform1f(GLES20.glGetUniformLocation(outputProgram,"uRotate"),rotation/90f);
             GLES20.glUniform1i(GLES20.glGetUniformLocation(outputProgram,"uMode"),mode);
