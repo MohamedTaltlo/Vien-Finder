@@ -42,17 +42,17 @@ jobs:
         uses: softprops/action-gh-release@v2
         if: github.ref == 'refs/heads/main'
         with:
-          tag_name: v1.1.0
-          name: Vien Finder v1.1.0
+          tag_name: v1.2.0
+          name: Vien Finder v1.2.0
           files: Vien-Finder.apk
           body: |
-            Vien Finder v1.1.0 for Samsung Galaxy A56 (experimental).
-            NEW: On-device GPU OpenGL camera pipeline replacing slow 8 FPS CPU processing.
-            NEW: Soft local R-G enhancement, dark vein visualization, color mode and green mode.
-            NEW: Camera2 torch request integrated with continuous live preview.
-            NEW: Focus button, brightness and exposure controls, screen rotation and hideable controls.
-            No network access or camera uploads.
-            NOTE: Uninstall v1.0.0 before installing this APK, because GitHub uses a separate debug signing key per build.
-            This unvalidated camera-enhancement preview does not determine vein depth or safe cannulation sites.
+            Vien Finder v1.2.0 — GPU contrast correction for Galaxy A56.
+            Rebuilt enhancement around the camera's real luminance to prevent clipped black/white images.
+            Local red-green processing is now gain-limited and edge-gated to reduce false lines and noise.
+            New before/after half-screen comparison (مقارنة).
+            Softer startup presets: sensitivity 45%, contrast 35%.
+            Existing OpenGL GPU pipeline, flash, focus, freeze and exposure controls retained.
+            Experimental visible-light contrast enhancement; not a clinical vein-location or depth detector.
+            Uninstall earlier v1.x debug builds before installing, as APK signing keys rotate with GitHub Actions.
           draft: false
           prerelease: true

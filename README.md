@@ -1,27 +1,35 @@
-# Vien Finder — Android Camera Preview
+# Vien Finder — Android camera enhancement
 
-**Vien Finder v1.1.0** — GPU-accelerated offline camera contrast explorer for Samsung Galaxy A56.
+**v1.2.0** — Offline GPU-accelerated live camera enhancement for Samsung Galaxy A56.
 
-[Download Vien Finder APK](https://github.com/MohamedTaltlo/Vien-Finder/releases/latest) or view the [v1.1.0 release](https://github.com/MohamedTaltlo/Vien-Finder/releases/tag/v1.1.0).
+[Download latest APK](https://github.com/MohamedTaltlo/Vien-Finder/releases/tag/v1.2.0).
 
-## Controls
+## v1.2.0 fixes
 
-- **طبيعي**: normal camera.
-- **الأوردة**: smooth adaptive grayscale, spectral red-green plus green reflectance contrast.
-- **R−G**: normalized local red/green spectral difference.
-- **أخضر**: green-channel contrast.
-- **ملون**: smoothly darkened color overlay instead of cyan speckles.
-- Sensitivity, contrast, brightness and camera exposure.
-- Toggle flashlight (Camera2 repeating request + auto-exposure), freeze frame, invert contrast, refocus, flip the preview direction, hide controls.
-- Local GPU OpenGL ES 2.0 processing. No image uploads, no analytics, no accounts, no network permission.
+- Replaces the v1.1 aggressive, fixed-base grayscale transformation that produced clipped whites and blacks with a brightness-preserving, bounded transformation.
+- Reduces granular false patterns using spatial smoothing and suppresses abrupt high-contrast edges.
+- Introduces **مقارنة**: original left half vs enhanced right half while the camera is live.
+- More conservative defaults: sensitivity 45%, contrast 35%; adjustable as desired.
+- 5 viewing modes: طبيعي, الأوردة, R−G, أخضر, ملون.
+- Continues to use on-device OpenGL ES 2.0 processing; no picture uploads or network access.
+- Camera2 continuous video, flashlight/torch request, focus, freeze, exposure and brightness controls.
 
 ## Install
 
-Download `Vien-Finder.apk` from the [v1.1.0 release](https://github.com/MohamedTaltlo/Vien-Finder/releases/tag/v1.1.0).
-Because each GitHub Actions build currently uses a fresh Android debug signing certificate, **uninstall the v1.0.0 app before installing v1.1.0**.
+Download `Vien-Finder.apk` from the [v1.2.0 release](https://github.com/MohamedTaltlo/Vien-Finder/releases/tag/v1.2.0).
+Uninstall v1.0/v1.1 first. Android debug builds are signed with a different certificate on each workflow run.
 
-## Known limitations
+## Test checklist
 
-Visible-light phone cameras cannot detect all deep veins, show true vessel depth or guarantee correspondence between enhanced contrast and actual veins. Artifacts from hair, shadows, color, tattoos and movement may remain. This is a camera-image enhancement prototype, not a validated tool for IV/cannula site selection.
+1. Use **طبيعي** and confirm the camera image looks normal and not overexposed.
+2. Use **مقارنة** to compare the left original view and right enhanced view of the same skin area.
+3. Try **الأوردة** with defaults (45/35/50), then raise sensitivity or contrast in small increments.
+4. Compare **R−G**, **أخضر** and **ملون**; the best option depends on lighting, skin and device.
+5. Toggle **فلاش** and check the actual phone LED, and test focus.
+6. Report results with two screenshots: original and best enhanced mode plus slider settings.
 
-The project is self-contained Java/Android Camera2 + OpenGL ES2, built with Gradle through GitHub Actions.
+Visible-light imaging does not reveal reliable vein depth or position. These enhancement outputs may include hair/shadow artefacts and should not be relied upon to select IV insertion sites without established clinical assessment.
+
+## Build
+
+GitHub Actions compiles the Java/Camera2/OpenGL Android APK, and publishes the debug installable app under [Releases](https://github.com/MohamedTaltlo/Vien-Finder/releases).
