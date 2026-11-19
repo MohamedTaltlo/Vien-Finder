@@ -66,9 +66,9 @@ public final class VeinRenderer implements GLSurfaceView.Renderer {
         "void main(){"+
         // Screen UV -> camera-landscape UV, with center crop respecting aspect ratio.
         "vec2 p=vUv;"+
-        "float portraitAspect=uAspect.y/uAspect.x;"+
-        "float ratio=uAspect.x/uAspect.y;"+
-        "p=vec2(0.5)+(p-vec2(0.5))*vec2(min(1.,ratio/portraitAspect),min(1.,portraitAspect/ratio));"+
+        "float sourcePortraitAspect=uAspect.y;"+
+        "float displayPortraitAspect=uAspect.x;"+
+        "p=vec2(0.5)+(p-vec2(0.5))*vec2(min(1.,displayPortraitAspect/sourcePortraitAspect),min(1.,sourcePortraitAspect/displayPortraitAspect));"+
         "vec2 uv; if(uRotate<0.5)uv=p;else if(uRotate<1.5)uv=vec2(p.y,1.-p.x);"+
         "else if(uRotate<2.5)uv=vec2(1.-p.x,1.-p.y);else uv=vec2(1.-p.y,p.x);"+
         "vec3 original=sampleAt(uv);"+
@@ -238,7 +238,7 @@ public final class VeinRenderer implements GLSurfaceView.Renderer {
             GLES20.glBindTexture(GLES20.GL_TEXTURE_2D,frameTexture);
             GLES20.glUniform1i(GLES20.glGetUniformLocation(outputProgram,"uFrame"),0);
             GLES20.glUniform2f(GLES20.glGetUniformLocation(outputProgram,"uPixel"),1f/frameWidth,1f/frameHeight);
-            GLES20.glUniform2f(GLES20.glGetUniformLocation(outputProgram,"uAspect"),screenWidth,screenHeight);
+            GLES20.glUniform2f(GLES20.glGetUniformLocation(outputProgram,"uAspect"),(float)screenWidth/screenHeight,(float)frameHeight/frameWidth);
             GLES20.glUniform1f(GLES20.glGetUniformLocation(outputProgram,"uSensitivity"),sensitivity);
             GLES20.glUniform1f(GLES20.glGetUniformLocation(outputProgram,"uContrast"),contrast);
             GLES20.glUniform1f(GLES20.glGetUniformLocation(outputProgram,"uBrightness"),brightness);
