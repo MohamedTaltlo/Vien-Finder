@@ -46,10 +46,10 @@ public class MainActivity extends Activity implements VeinRenderer.Listener {
     private LinearLayout panel;
     private TextView status, sensitivityLabel, contrastLabel, brightnessLabel, exposureLabel;
     private Button[] modeButtons;
-    private Button torchButton, reverseButton, freezeButton, controlsToggle, rotationButton;
+    private Button torchButton, reverseButton, freezeButton, compareButton, controlsToggle, rotationButton;
     private boolean resumed=false, opening=false, flashAvailable=false, torchRequested=false;
-    private boolean reversed=false, frozen=false;
-    private int mode=1, sensitivity=65, contrast=58, brightness=50;
+    private boolean reversed=false, frozen=false, comparison=false;
+    private int mode=1, sensitivity=45, contrast=35, brightness=50;
     private int rotateDegrees=90;
     private CameraManager manager;
     private String cameraId;
@@ -168,11 +168,11 @@ public class MainActivity extends Activity implements VeinRenderer.Listener {
         }
         panel.addView(modeRow);updateButtonColors();
 
-        sensitivityLabel=text("الحساسية 65%",12,Color.WHITE,false);sensitivityLabel.setGravity(Gravity.RIGHT);
+        sensitivityLabel=text("الحساسية 45%",12,Color.WHITE,false);sensitivityLabel.setGravity(Gravity.RIGHT);
         panel.addView(sensitivityLabel);
         slider(panel,sensitivity,v->{sensitivity=v;sensitivityLabel.setText("الحساسية "+v+"%");applySettings();});
 
-        contrastLabel=text("قوة التباين 58%",12,Color.WHITE,false);contrastLabel.setGravity(Gravity.RIGHT);
+        contrastLabel=text("قوة التباين 35%",12,Color.WHITE,false);contrastLabel.setGravity(Gravity.RIGHT);
         panel.addView(contrastLabel);
         slider(panel,contrast,v->{contrast=v;contrastLabel.setText("قوة التباين "+v+"%");applySettings();});
 
@@ -183,11 +183,13 @@ public class MainActivity extends Activity implements VeinRenderer.Listener {
         LinearLayout quick=row();
         torchButton=button("فلاش: إيقاف");
         reverseButton=button("عكس");
+        compareButton=button("مقارنة");
         freezeButton=button("تجميد");
         Button focus=button("تركيز");
         addWeighted(quick,torchButton,43);
         addWeighted(quick,reverseButton,43);
         addWeighted(quick,freezeButton,43);
+        addWeighted(quick,compareButton,43);
         addWeighted(quick,focus,43);
         panel.addView(quick);
         torchButton.setOnClickListener(v->toggleTorch());
@@ -198,6 +200,12 @@ public class MainActivity extends Activity implements VeinRenderer.Listener {
         });
         freezeButton.setOnClickListener(v->{
             frozen=!frozen;freezeButton.setText(frozen?"متابعة":"تجميد");applySettings();
+        });
+        compareButton.setOnClickListener(v->{
+            comparison=!comparison;
+            compareButton.setText(comparison?"إلغاء المقارنة":"مقارنة");
+            compareButton.setBackground(background(comparison?Color.rgb(0,123,151):Color.rgb(28,49,72),11));
+            applySettings();
         });
         focus.setOnClickListener(v->triggerFocus());
 
@@ -222,7 +230,7 @@ public class MainActivity extends Activity implements VeinRenderer.Listener {
         return frame;
     }
     private void applySettings(){
-        if(processor!=null)processor.setSettings(mode,sensitivity,contrast,brightness,reversed,frozen);
+        if(processor!=null)processor.setSettings(mode,sensitivity,contrast,brightness,reversed,frozen,comparison);
     }
     private void updateStatus(String text){runOnUiThread(()->{if(status!=null)status.setText(text);});}
     @Override public void onFps(int fps){updateStatus("GPU • "+fps+" FPS • بدون إنترنت");}
